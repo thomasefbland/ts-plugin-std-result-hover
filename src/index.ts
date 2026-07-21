@@ -15,6 +15,10 @@ function init(modules: { typescript: typeof ts_types }) {
     return find(source_file);
   }
 
+  function get_display_parts_text(parts: ts_types.SymbolDisplayPart[] | undefined): string {
+    return parts ? parts.map((p) => p.text).join("") : "";
+  }
+
   function try_rewrite_return_type(checker: ts_types.TypeChecker, signature: ts_types.Signature, enclosing_node: ts_types.Node): string | null {
     const return_type = checker.getReturnTypeOfSignature(signature);
     const unwrapped = unwrap_promise(checker, return_type);
@@ -24,6 +28,41 @@ function init(modules: { typescript: typeof ts_types }) {
     const t_strings = dedupe_type_strings(checker, analyzed.ok_value_types, enclosing_node);
     const e_strings = dedupe_type_strings(checker, analyzed.error_types, enclosing_node);
     return format_result_type(unwrapped.is_async, t_strings, e_strings);
+  }
+
+  function rewrite_display_parts_for_result(display_parts: ts_types.SymbolDisplayPart[], checker: ts_types.TypeChecker, node: ts_types.Node): ts_types.SymbolDisplayPart[] {
+    const text = get_display_parts_text(display_parts);
+    const prefix = split_signature_text(text);
+    if (!prefix) return display_parts;
+
+    const type = checker.getTypeAtLocation(node);
+    const signatures = type.getCallSignatures();
+    for (const signature of signatures) {
+      const rewritten = try_rewrite_return_type(checker, signature, node);
+      if (rewritten) {
+        return [{ kind: "text", text: prefix + rewritten }];
+      }
+    }
+    return display_parts;
+  }
+
+  function rewrite_suffix_for_result(suffix_parts: ts_types.SymbolDisplayPart[], checker: ts_types.TypeChecker, node: ts_types.Node): ts_types.SymbolDisplayPart[] {
+    const text = get_display_parts_text(suffix_parts);
+    const colon_idx = text.indexOf(": ");
+    if (colon_idx === -1) return suffix_parts;
+
+    const type = checker.getTypeAtLocation(node);
+    const signatures = type.getCallSignatures();
+    for (const signature of signatures) {
+      const rewritten = try_rewrite_return_type(checker, signature, node);
+      if (rewritten) {
+        return [
+          { kind: "punctuation", text: text.slice(0, colon_idx + 2) },
+          { kind: "text", text: rewritten },
+        ];
+      }
+    }
+    return suffix_parts;
   }
 
   function create(info: ts_types.server.PluginCreateInfo) {
@@ -46,24 +85,51 @@ function init(modules: { typescript: typeof ts_types }) {
         const node = find_node_at_position(source_file, position);
         if (!node) return prior;
 
-        const type = checker.getTypeAtLocation(node);
-        const signatures = type.getCallSignatures();
-        if (!signatures.length) return prior;
+        prior.displayParts = rewrite_display_parts_for_result(prior.displayParts, checker, node);
+      } catch {}
 
-        for (const signature of signatures) {
-          const rewritten = try_rewrite_return_type(checker, signature, node);
-          if (rewritten) {
-            const text = prior.displayParts.map((p) => p.text).join("");
-            const prefix = split_signature_text(text);
-            if (prefix) {
-              prior.displayParts = [{ kind: "text", text: prefix + rewritten }];
-            }
-            break;
-          }
+      return prior;
+    };
+
+    proxy.getCompletionEntryDetails = (fileName, position, entryName, formatOptions, source, preferences, data) => {
+      const prior = info.languageService.getCompletionEntryDetails(fileName, position, entryName, formatOptions, source, preferences, data);
+      if (!prior) return prior;
+
+      try {
+        const program = info.languageService.getProgram();
+        const source_file = program?.getSourceFile(fileName);
+        if (!program || !source_file) return prior;
+
+        const checker = program.getTypeChecker();
+        const node = find_node_at_position(source_file, position);
+        if (!node) return prior;
+
+        prior.displayParts = rewrite_display_parts_for_result(prior.displayParts, checker, node);
+        if (prior.documentation) {
+          prior.documentation = rewrite_display_parts_for_result(prior.documentation, checker, node);
         }
-      } catch {
-        // never let a bug here break hover for the user
-      }
+      } catch {}
+
+      return prior;
+    };
+
+    proxy.getSignatureHelpItems = (fileName, position, options) => {
+      const prior = info.languageService.getSignatureHelpItems(fileName, position, options);
+      if (!prior?.items?.length) return prior;
+
+      try {
+        const program = info.languageService.getProgram();
+        const source_file = program?.getSourceFile(fileName);
+        if (!program || !source_file) return prior;
+
+        const checker = program.getTypeChecker();
+        const node = find_node_at_position(source_file, position);
+        if (!node) return prior;
+
+        for (const item of prior.items) {
+          item.suffixDisplayParts = rewrite_suffix_for_result(item.suffixDisplayParts, checker, node);
+        }
+      } catch {}
 
       return prior;
     };

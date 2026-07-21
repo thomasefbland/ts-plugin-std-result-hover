@@ -30,11 +30,7 @@ function safe_parse<T = unknown>(s: string): Result<T, Safe_Syntax_Error | Unkno
 
 For async functions returning `Promise<Result<...>>`, the hover is rewritten to use `Async_Result<...>`.
 
-## Requirements
-
-- TypeScript >= 4.7
-- Node 22+ / pnpm 11+
-- A project using `@thomasefbland/std`'s `Result` type
+Also rewrites completion docs and signature help.
 
 ## Install
 
@@ -42,7 +38,7 @@ For async functions returning `Promise<Result<...>>`, the hover is rewritten to 
 pnpm add -g gh:ts-plugin-std-result-hover
 ```
 
-Then add the vtsls global plugin config to your Neovim config:
+vtsls config:
 
 ```lua
 vim.lsp.config('vtsls', {
@@ -66,17 +62,13 @@ Restart tsserver after installing: `:LspRestart`.
 
 ## How It Works
 
-Matching is purely structural — it detects the `{ is_ok, value, error }` shape. It doesn't specifically import or check for `@thomasefbland/std`'s `Result` type, so it will also fire on any other type with that same shape. Since this is intentionally scoped to personal use with `@thomasefbland/std`, that's acceptable, but worth knowing.
+Matching is purely structural — it detects the `{ is_ok, value, error }` shape. It doesn't specifically import or check for `@thomasefbland/std`'s `Result` type, so it will also fire on any other type with that same shape.
 
 ## Limitations
 
-- Only affects hover (`getQuickInfoAtPosition`) — not signature help or completion docs.
+- Only affects hover, completion docs, and signature help — never touches `tsc`, type-checking, or builds.
 - Overloaded functions: picks the first signature matching the Result shape rather than merging all overloads.
-- Purely cosmetic — never affects `tsc`, type-checking, or build output.
-
-## Verification
-
-Open a project using `@thomasefbland/std`, hover over a function that returns `Result<T, E1 | E2>` shaped like `safe_parse`, and confirm the hover text shows the collapsed form (e.g. `Result<T, E1 | E2>`) rather than the raw union.
+- Purely cosmetic display change.
 
 ## License
 
