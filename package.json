@@ -1,0 +1,31 @@
+{
+  "name": "@thomasefbland/ts-plugin-std-result-hover",
+  "version": "0.0.1",
+  "description": "TypeScript language-service plugin: collapses Result/Async_Result hover unions from @thomasefbland/std",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "files": [
+    "dist"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/thomasefbland/ts-plugin-std-result-hover.git"
+  },
+  "keywords": [
+    "typescript",
+    "typescript-plugin",
+    "language-service",
+    "tsserver"
+  ],
+  "license": "MIT",
+  "scripts": {
+    "build": "tsc",
+    "prepare": "pnpm run build"
+  },
+  "peerDependencies": {
+    "typescript": ">=4.7"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}
