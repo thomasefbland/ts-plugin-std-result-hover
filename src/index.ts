@@ -193,39 +193,48 @@ function init(modules: { typescript: typeof ts_types }) {
     return classify_type_kind(checker, checker.getReturnTypeOfSignature(signature));
   }
 
-  function collect_return_kinds(checker: ts_types.TypeChecker, body: ts_types.Block): Set<Return_Kind> {
-    const kinds = new Set<Return_Kind>();
+  function collect_return_kinds(checker: ts_types.TypeChecker, body: ts_types.Block): { kind: Return_Kind; node: ts_types.ReturnStatement }[] {
+    const results: { kind: Return_Kind; node: ts_types.ReturnStatement }[] = [];
     function walk(node: ts_types.Node) {
       if (ts.isReturnStatement(node) && node.expression) {
-        kinds.add(classify_type_kind(checker, checker.getTypeAtLocation(node.expression)));
+        results.push({ kind: classify_type_kind(checker, checker.getTypeAtLocation(node.expression)), node });
       }
       ts.forEachChild(node, walk);
     }
     walk(body);
-    return kinds;
+    return results;
   }
 
   function check_overload_consistency(source_file: ts_types.SourceFile, checker: ts_types.TypeChecker): ts_types.Diagnostic[] {
     const diagnostics: ts_types.Diagnostic[] = [];
+
+    function diagnose_mixed_returns(node: ts_types.FunctionDeclaration, returns: { kind: Return_Kind; node: ts_types.ReturnStatement }[]) {
+      const kinds = new Set(returns.map((r) => r.kind));
+      const has_result = kinds.has("result") || kinds.has("async_result");
+      if (!has_result) return;
+
+      for (const { kind, node: ret_stmt } of returns) {
+        if (kind === "other") {
+          const line = source_file.getLineAndCharacterOfPosition(ret_stmt.getStart()).line + 1;
+          diagnostics.push({
+            file: source_file,
+            start: ret_stmt.getStart(),
+            length: ret_stmt.getEnd() - ret_stmt.getStart(),
+            messageText: `Found non-Result return at line ${line}`,
+            category: ts.DiagnosticCategory.Error,
+            code: 9999,
+          });
+        }
+      }
+    }
 
     function visit(node: ts_types.Node) {
       if (ts.isFunctionDeclaration(node) && node.name) {
         const symbol = checker.getSymbolAtLocation(node.name);
         if (symbol) {
           if (node.body) {
-            const kinds = collect_return_kinds(checker, node.body);
-            const has_result = kinds.has("result") || kinds.has("async_result");
-            const has_other = kinds.has("other");
-            if (has_result && has_other) {
-              diagnostics.push({
-                file: source_file,
-                start: node.name.getStart(source_file),
-                length: node.name.getEnd() - node.name.getStart(source_file),
-                messageText: `Inconsistent return types: not all returns are Result or Async_Result`,
-                category: ts.DiagnosticCategory.Error,
-                code: 9999,
-              });
-            }
+            const returns = collect_return_kinds(checker, node.body);
+            diagnose_mixed_returns(node, returns);
           } else {
             const declarations = symbol.getDeclarations();
             if (declarations && declarations.length > 1) {
@@ -236,14 +245,23 @@ function init(modules: { typescript: typeof ts_types }) {
                   if (sig) kinds.add(classify_return_type(checker, sig));
                 }
               }
-              const has_result = kinds.has("result") || kinds.has("async_result");
+              const has_result = kinds.has("result");
+              const has_async_result = kinds.has("async_result");
               const has_other = kinds.has("other");
+
+              let message: string | null = null;
               if (has_result && has_other) {
+                message = "Overloads mix Result and non-Result returns";
+              } else if (has_async_result && has_other) {
+                message = "Overloads mix Async_Result and non-Result returns";
+              }
+
+              if (message) {
                 diagnostics.push({
                   file: source_file,
                   start: node.name.getStart(source_file),
                   length: node.name.getEnd() - node.name.getStart(source_file),
-                  messageText: `Inconsistent return types: not all returns are Result or Async_Result`,
+                  messageText: message,
                   category: ts.DiagnosticCategory.Error,
                   code: 9999,
                 });
