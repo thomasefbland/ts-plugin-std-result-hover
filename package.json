@@ -1,6 +1,6 @@
 {
   "name": "@thomasefbland/ts-plugin-std-result",
-  "version": "0.0.6",
+  "version": "0.0.7",
   "description": "TypeScript language-service plugin: collapses Result/Async_Result unions into clean generic form and enforces consistent Result returns",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
