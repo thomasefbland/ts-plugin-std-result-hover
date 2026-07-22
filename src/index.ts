@@ -78,7 +78,7 @@ function init(modules: { typescript: typeof ts_types }) {
 
     const first_obj = members.find((m) => !!(m.flags & ts.TypeFlags.Object));
     if (!first_obj) return null;
-    const brand_prop = first_obj.getProperty("~tag");
+    const brand_prop = first_obj.getProperty("~brand");
     if (!brand_prop) return null;
     const brand_type = checker.typeToString(checker.getTypeOfSymbol(brand_prop));
     if (brand_type !== `"${RESULT_BRAND}"`) return null;
