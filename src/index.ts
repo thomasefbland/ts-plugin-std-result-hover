@@ -1,9 +1,18 @@
 import type * as ts_types from "typescript/lib/tsserverlibrary";
+import * as fs from "fs";
+import * as path from "path";
 import { analyze_result_union, dedupe_type_strings, unwrap_promise } from "./result-analysis";
 import { format_result_type, split_signature_text } from "./hover-format";
 
+const DEBUG_LOG = path.join(require("os").tmpdir(), "ts-plugin-result-debug.log");
+
+function log(msg: string) {
+  fs.appendFileSync(DEBUG_LOG, msg + "\n");
+}
+
 function init(modules: { typescript: typeof ts_types }) {
   const ts = modules.typescript;
+  log("=== PLUGIN INIT ===");
 
   function find_node_at_position(source_file: ts_types.SourceFile, position: number): ts_types.Node | undefined {
     function find(node: ts_types.Node): ts_types.Node | undefined {
@@ -85,8 +94,10 @@ function init(modules: { typescript: typeof ts_types }) {
         const node = find_node_at_position(source_file, position);
         if (!node) return prior;
 
+        log(`[HOVER] file=${fileName} pos=${position} nodeKind=${node.kind}`);
         prior.displayParts = rewrite_display_parts_for_result(prior.displayParts, checker, node);
-      } catch {}
+        log(`[HOVER] result text=${get_display_parts_text(prior.displayParts)}`);
+      } catch (e) { log(`[HOVER] error: ${e}`); }
 
       return prior;
     };
@@ -95,6 +106,8 @@ function init(modules: { typescript: typeof ts_types }) {
       const prior = info.languageService.getCompletionEntryDetails(fileName, position, entryName, formatOptions, source, preferences, data);
       if (!prior) return prior;
 
+      log(`[COMPLETION] file=${fileName} pos=${position} entry=${entryName} displayParts=${get_display_parts_text(prior.displayParts)} hasDoc=${!!prior.documentation}`);
+
       try {
         const program = info.languageService.getProgram();
         const source_file = program?.getSourceFile(fileName);
@@ -102,13 +115,22 @@ function init(modules: { typescript: typeof ts_types }) {
 
         const checker = program.getTypeChecker();
         const node = find_node_at_position(source_file, position);
-        if (!node) return prior;
+        if (!node) {
+          log(`[COMPLETION] no node at position`);
+          return prior;
+        }
+
+        log(`[COMPLETION] nodeKind=${node.kind} nodeText=${node.getText(source_file).slice(0, 50)}`);
+        const type = checker.getTypeAtLocation(node);
+        const sigs = type.getCallSignatures();
+        log(`[COMPLETION] callSigs=${sigs.length}`);
 
         prior.displayParts = rewrite_display_parts_for_result(prior.displayParts, checker, node);
         if (prior.documentation) {
           prior.documentation = rewrite_display_parts_for_result(prior.documentation, checker, node);
         }
-      } catch {}
+        log(`[COMPLETION] result displayParts=${get_display_parts_text(prior.displayParts)}`);
+      } catch (e) { log(`[COMPLETION] error: ${e}`); }
 
       return prior;
     };

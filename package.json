@@ -1,6 +1,6 @@
 {
   "name": "@thomasefbland/ts-plugin-std-result-hover",
-  "version": "0.0.2",
+  "version": "0.0.3",
   "description": "TypeScript language-service plugin: collapses Result/Async_Result hover unions from @thomasefbland/std",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
@@ -26,6 +26,7 @@
     "typescript": ">=4.7"
   },
   "devDependencies": {
+    "@types/node": "^26.1.1",
     "typescript": "^5.5.0"
   }
 }

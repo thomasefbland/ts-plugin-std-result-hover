@@ -48,7 +48,7 @@ vim.lsp.config('vtsls', {
         globalPlugins = {
           {
             name = "@thomasefbland/ts-plugin-std-result-hover",
-            location = vim.fn.trim(vim.fn.system("pnpm root -g")),
+            location = vim.fn.system("pnpm list -g --parseable @thomasefbland/ts-plugin-std-result-hover 2>/dev/null"):gsub("\n$", ""):match("([^\n]+)$"),
             enableForWorkspaceTypeScriptVersions = true,
           },
         },
