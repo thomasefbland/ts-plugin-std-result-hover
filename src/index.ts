@@ -1,22 +1,129 @@
 import type * as ts_types from "typescript/lib/tsserverlibrary";
-import * as fs from "fs";
-import * as path from "path";
-import { analyze_result_union, dedupe_type_strings, unwrap_promise } from "./result-analysis";
-import { format_result_type, split_signature_text } from "./hover-format";
-
-const DEBUG_LOG = path.join(require("os").tmpdir(), "ts-plugin-result-debug.log");
-
-function log(msg: string) {
-  fs.appendFileSync(DEBUG_LOG, msg + "\n");
-}
 
 function init(modules: { typescript: typeof ts_types }) {
   const ts = modules.typescript;
-  log("=== PLUGIN INIT ===");
+
+  // -- text-splice ----------------------------------------------------------
+
+  function find_prefix_end(text: string): number | null {
+    if (text.startsWith("): ")) return 3;
+
+    let depth = 0;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if ("({[<".includes(ch)) depth++;
+      else if (")}]>".includes(ch)) {
+        depth--;
+        if (depth === 0 && text.substring(i + 1, 2) === ": ") {
+          return i + 3;
+        }
+      }
+    }
+    const arrow_idx = text.indexOf("=> ");
+    if (arrow_idx !== -1) return arrow_idx + 3;
+    const colon_idx = text.indexOf(": ");
+    return colon_idx !== -1 ? colon_idx + 2 : null;
+  }
+
+  function find_return_type_end(text: string): number {
+    let depth = 0;
+    for (let i = 0; i < text.length; i++) {
+      const ch = text[i];
+      if ("({[<".includes(ch)) depth++;
+      else if (")}]>".includes(ch)) {
+        depth--;
+        if (depth === 0) {
+          let j = i + 1;
+          while (j < text.length && /\s/.test(text[j])) j++;
+          if (text[j] === "|") {
+            i = j;
+            continue;
+          }
+          return i + 1;
+        }
+      }
+    }
+    return text.length;
+  }
+
+  // -- result-analysis ------------------------------------------------------
+
+  interface Result_Analysis {
+    ok_value_types: ts_types.Type[];
+    error_types: ts_types.Type[];
+  }
+
+  interface Unwrapped_Return {
+    inner: ts_types.Type;
+    is_async: boolean;
+  }
+
+  function unwrap_promise(checker: ts_types.TypeChecker, type: ts_types.Type): Unwrapped_Return {
+    const symbol = type.getSymbol?.();
+    if (symbol?.getName() === "Promise") {
+      const type_args = checker.getTypeArguments(type as ts_types.TypeReference);
+      if (type_args?.length === 1) {
+        return { inner: type_args[0], is_async: true };
+      }
+    }
+    return { inner: type, is_async: false };
+  }
+
+  function analyze_result_union(checker: ts_types.TypeChecker, type: ts_types.Type): Result_Analysis | null {
+    const members = type.isUnion() ? type.types : [type];
+    const ok_value_types: ts_types.Type[] = [];
+    const error_types: ts_types.Type[] = [];
+
+    for (const member of members) {
+      if (!(member.flags & ts.TypeFlags.Object)) return null;
+
+      const props = member.getProperties();
+      if (props.length !== 3) return null;
+
+      const is_ok_prop = member.getProperty("is_ok");
+      const value_prop = member.getProperty("value");
+      const error_prop = member.getProperty("error");
+      if (!is_ok_prop || !value_prop || !error_prop) return null;
+
+      const is_ok_type = checker.getTypeOfSymbol(is_ok_prop);
+      if (!(is_ok_type.flags & ts.TypeFlags.BooleanLiteral)) return null;
+      const is_ok = checker.typeToString(is_ok_type) === "true";
+
+      if (is_ok) ok_value_types.push(checker.getTypeOfSymbol(value_prop));
+      else error_types.push(checker.getTypeOfSymbol(error_prop));
+    }
+
+    if (ok_value_types.length === 0 && error_types.length === 0) return null;
+    return { ok_value_types, error_types };
+  }
+
+  function dedupe_type_strings(checker: ts_types.TypeChecker, types: ts_types.Type[], enclosing_node: ts_types.Node | undefined): string[] {
+    const seen = new Set<string>();
+    const out: string[] = [];
+    for (const t of types) {
+      const raw = checker.typeToString(t, enclosing_node, ts.TypeFormatFlags.NoTruncation);
+      const str = raw.replace(/import\("[^"]*"\)\./g, "");
+      if (str === "never") continue;
+      if (!seen.has(str)) {
+        seen.add(str);
+        out.push(str);
+      }
+    }
+    return out;
+  }
+
+  function format_result_type(is_async: boolean, t_strings: string[], e_strings: string[]): string {
+    const t_str = t_strings.length > 0 ? t_strings.join(" | ") : "void";
+    const e_str = e_strings.length > 0 ? e_strings.join(" | ") : null;
+    const name = is_async ? "Async_Result" : "Result";
+    return e_str ? `${name}<${t_str}, ${e_str}>` : `${name}<${t_str}>`;
+  }
+
+  // -- helpers --------------------------------------------------------------
 
   function find_node_at_position(source_file: ts_types.SourceFile, position: number): ts_types.Node | undefined {
     function find(node: ts_types.Node): ts_types.Node | undefined {
-      if (position >= node.getStart(source_file) && position < node.getEnd()) {
+      if (position >= node.getStart(source_file) && position <= node.getEnd()) {
         return ts.forEachChild(node, find) || node;
       }
       return undefined;
@@ -24,14 +131,19 @@ function init(modules: { typescript: typeof ts_types }) {
     return find(source_file);
   }
 
-  function get_display_parts_text(parts: ts_types.SymbolDisplayPart[] | undefined): string {
-    return parts ? parts.map((p) => p.text).join("") : "";
+  function find_enclosing_call_expression(node: ts_types.Node): ts_types.CallExpression | null {
+    let current: ts_types.Node | undefined = node;
+    while (current) {
+      if (ts.isCallExpression(current)) return current;
+      current = current.parent;
+    }
+    return null;
   }
 
-  function try_rewrite_return_type(checker: ts_types.TypeChecker, signature: ts_types.Signature, enclosing_node: ts_types.Node): string | null {
+  function compute_result_string_for_signature(checker: ts_types.TypeChecker, signature: ts_types.Signature, enclosing_node: ts_types.Node): string | null {
     const return_type = checker.getReturnTypeOfSignature(signature);
     const unwrapped = unwrap_promise(checker, return_type);
-    const analyzed = analyze_result_union(checker, unwrapped.inner, ts);
+    const analyzed = analyze_result_union(checker, unwrapped.inner);
     if (!analyzed) return null;
 
     const t_strings = dedupe_type_strings(checker, analyzed.ok_value_types, enclosing_node);
@@ -39,40 +151,28 @@ function init(modules: { typescript: typeof ts_types }) {
     return format_result_type(unwrapped.is_async, t_strings, e_strings);
   }
 
-  function rewrite_display_parts_for_result(display_parts: ts_types.SymbolDisplayPart[], checker: ts_types.TypeChecker, node: ts_types.Node): ts_types.SymbolDisplayPart[] {
-    const text = get_display_parts_text(display_parts);
-    const prefix = split_signature_text(text);
-    if (!prefix) return display_parts;
-
-    const type = checker.getTypeAtLocation(node);
-    const signatures = type.getCallSignatures();
-    for (const signature of signatures) {
-      const rewritten = try_rewrite_return_type(checker, signature, node);
-      if (rewritten) {
-        return [{ kind: "text", text: prefix + rewritten }];
-      }
+  function compute_result_string_for_type(checker: ts_types.TypeChecker, callable_type: ts_types.Type, enclosing_node: ts_types.Node): string | null {
+    for (const signature of callable_type.getCallSignatures()) {
+      const result = compute_result_string_for_signature(checker, signature, enclosing_node);
+      if (result) return result;
     }
-    return display_parts;
+    return null;
   }
 
-  function rewrite_suffix_for_result(suffix_parts: ts_types.SymbolDisplayPart[], checker: ts_types.TypeChecker, node: ts_types.Node): ts_types.SymbolDisplayPart[] {
-    const text = get_display_parts_text(suffix_parts);
-    const colon_idx = text.indexOf(": ");
-    if (colon_idx === -1) return suffix_parts;
+  function splice_return_type(parts: ts_types.SymbolDisplayPart[], merged: string): ts_types.SymbolDisplayPart[] {
+    const text = parts.map((p) => p.text).join("");
+    const prefix_end = find_prefix_end(text);
+    if (prefix_end === null) return parts;
 
-    const type = checker.getTypeAtLocation(node);
-    const signatures = type.getCallSignatures();
-    for (const signature of signatures) {
-      const rewritten = try_rewrite_return_type(checker, signature, node);
-      if (rewritten) {
-        return [
-          { kind: "punctuation", text: text.slice(0, colon_idx + 2) },
-          { kind: "text", text: rewritten },
-        ];
-      }
-    }
-    return suffix_parts;
+    const prefix = text.slice(0, prefix_end);
+    const remainder = text.slice(prefix_end);
+    const return_type_end = find_return_type_end(remainder);
+    const suffix = remainder.slice(return_type_end);
+
+    return [{ kind: "text", text: prefix + merged + suffix }];
   }
+
+  // -- plugin ---------------------------------------------------------------
 
   function create(info: ts_types.server.PluginCreateInfo) {
     const proxy: ts_types.LanguageService = Object.create(null);
@@ -94,19 +194,29 @@ function init(modules: { typescript: typeof ts_types }) {
         const node = find_node_at_position(source_file, position);
         if (!node) return prior;
 
-        log(`[HOVER] file=${fileName} pos=${position} nodeKind=${node.kind}`);
-        prior.displayParts = rewrite_display_parts_for_result(prior.displayParts, checker, node);
-        log(`[HOVER] result text=${get_display_parts_text(prior.displayParts)}`);
-      } catch (e) { log(`[HOVER] error: ${e}`); }
+        const type = checker.getTypeAtLocation(node);
+
+        let merged = compute_result_string_for_type(checker, type, node);
+
+        if (!merged) {
+          const unwrapped = unwrap_promise(checker, type);
+          const analyzed = analyze_result_union(checker, unwrapped.inner);
+          if (analyzed) {
+            const t_strings = dedupe_type_strings(checker, analyzed.ok_value_types, node);
+            const e_strings = dedupe_type_strings(checker, analyzed.error_types, node);
+            merged = format_result_type(unwrapped.is_async, t_strings, e_strings);
+          }
+        }
+
+        if (merged) prior.displayParts = splice_return_type(prior.displayParts, merged);
+      } catch {}
 
       return prior;
     };
 
     proxy.getCompletionEntryDetails = (fileName, position, entryName, formatOptions, source, preferences, data) => {
       const prior = info.languageService.getCompletionEntryDetails(fileName, position, entryName, formatOptions, source, preferences, data);
-      if (!prior) return prior;
-
-      log(`[COMPLETION] file=${fileName} pos=${position} entry=${entryName} displayParts=${get_display_parts_text(prior.displayParts)} hasDoc=${!!prior.documentation}`);
+      if (!prior?.displayParts) return prior;
 
       try {
         const program = info.languageService.getProgram();
@@ -114,23 +224,14 @@ function init(modules: { typescript: typeof ts_types }) {
         if (!program || !source_file) return prior;
 
         const checker = program.getTypeChecker();
-        const node = find_node_at_position(source_file, position);
-        if (!node) {
-          log(`[COMPLETION] no node at position`);
-          return prior;
-        }
+        const symbol = info.languageService.getCompletionEntrySymbol(fileName, position, entryName, source);
+        if (!symbol) return prior;
 
-        log(`[COMPLETION] nodeKind=${node.kind} nodeText=${node.getText(source_file).slice(0, 50)}`);
-        const type = checker.getTypeAtLocation(node);
-        const sigs = type.getCallSignatures();
-        log(`[COMPLETION] callSigs=${sigs.length}`);
-
-        prior.displayParts = rewrite_display_parts_for_result(prior.displayParts, checker, node);
-        if (prior.documentation) {
-          prior.documentation = rewrite_display_parts_for_result(prior.documentation, checker, node);
-        }
-        log(`[COMPLETION] result displayParts=${get_display_parts_text(prior.displayParts)}`);
-      } catch (e) { log(`[COMPLETION] error: ${e}`); }
+        const node = find_node_at_position(source_file, position) ?? source_file;
+        const callable_type = checker.getTypeOfSymbolAtLocation(symbol, node);
+        const merged = compute_result_string_for_type(checker, callable_type, node);
+        if (merged) prior.displayParts = splice_return_type(prior.displayParts, merged);
+      } catch {}
 
       return prior;
     };
@@ -148,8 +249,75 @@ function init(modules: { typescript: typeof ts_types }) {
         const node = find_node_at_position(source_file, position);
         if (!node) return prior;
 
-        for (const item of prior.items) {
-          item.suffixDisplayParts = rewrite_suffix_for_result(item.suffixDisplayParts, checker, node);
+        const call_expr = find_enclosing_call_expression(node);
+        if (!call_expr) return prior;
+
+        const callable_type = checker.getTypeAtLocation(call_expr.expression);
+
+        for (let i = 0; i < prior.items.length; i++) {
+          const signature = callable_type.getCallSignatures()[i];
+          if (!signature) continue;
+          const merged = compute_result_string_for_signature(checker, signature, node);
+          if (!merged) continue;
+          prior.items[i].suffixDisplayParts = [
+            { kind: "punctuation", text: "): " },
+            { kind: "text", text: merged },
+          ];
+        }
+      } catch {}
+
+      return prior;
+    };
+
+    (proxy as any).provideInlayHints = (fileName: string, span: { start: number; length: number }, preferences: any) => {
+      const prior = (info.languageService as any).provideInlayHints(fileName, span, preferences);
+      if (!prior?.length) return prior;
+
+      try {
+        const program = info.languageService.getProgram();
+        const source_file = program?.getSourceFile(fileName);
+        if (!program || !source_file) return prior;
+
+        const checker = program.getTypeChecker();
+
+        for (const hint of prior) {
+          if (hint.kind !== "Type") continue;
+
+          let node = find_node_at_position(source_file, hint.position);
+          if (!node) continue;
+
+          let type = checker.getTypeAtLocation(node);
+          let unwrapped = unwrap_promise(checker, type);
+          let analyzed = analyze_result_union(checker, unwrapped.inner);
+
+          if (!analyzed) {
+            let current: ts_types.Node | undefined = node;
+            while (current) {
+              if (ts.isFunctionDeclaration(current) || ts.isMethodDeclaration(current) || ts.isArrowFunction(current) || ts.isFunctionExpression(current)) {
+                for (const sig of checker.getTypeAtLocation(current).getCallSignatures()) {
+                  const ret = checker.getReturnTypeOfSignature(sig);
+                  const ret_unwrapped = unwrap_promise(checker, ret);
+                  const ret_analyzed = analyze_result_union(checker, ret_unwrapped.inner);
+                  if (ret_analyzed) {
+                    unwrapped = ret_unwrapped;
+                    analyzed = ret_analyzed;
+                    node = current;
+                    break;
+                  }
+                }
+                break;
+              }
+              current = current.parent;
+            }
+          }
+
+          if (!analyzed) continue;
+
+          const t_strings = dedupe_type_strings(checker, analyzed.ok_value_types, node);
+          const e_strings = dedupe_type_strings(checker, analyzed.error_types, node);
+          const merged = format_result_type(unwrapped.is_async, t_strings, e_strings);
+          hint.text = merged;
+          hint.displayParts = [{ kind: "text", text: merged }];
         }
       } catch {}
 

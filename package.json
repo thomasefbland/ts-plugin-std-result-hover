@@ -1,7 +1,7 @@
 {
   "name": "@thomasefbland/ts-plugin-std-result-hover",
-  "version": "0.0.3",
-  "description": "TypeScript language-service plugin: collapses Result/Async_Result hover unions from @thomasefbland/std",
+  "version": "0.0.4",
+  "description": "TypeScript language-service plugin: collapses Result/Async_Result unions into clean generic form for hover, completions, signature help, and inlay hints",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [

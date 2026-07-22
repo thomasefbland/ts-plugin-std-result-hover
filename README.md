@@ -1,6 +1,6 @@
 # @thomasefbland/ts-plugin-std-result-hover
 
-TypeScript language-service plugin that collapses `Result`/`Async_Result` hover types from `@thomasefbland/std` into their clean generic form instead of the raw expanded union.
+TypeScript language-service plugin that collapses `Result`/`Async_Result` types from `@thomasefbland/std` into their clean generic form instead of the raw expanded union.
 
 ## Before / After
 
@@ -28,47 +28,24 @@ function safe_parse<T = unknown>(s: string): {
 function safe_parse<T = unknown>(s: string): Result<T, Safe_Syntax_Error | Unknown_Error>
 ```
 
-For async functions returning `Promise<Result<...>>`, the hover is rewritten to use `Async_Result<...>`.
+For async functions returning `Promise<Result<...>>`, the display is rewritten to use `Async_Result<...>`.
 
-Also rewrites completion docs and signature help.
+## What This Rewrites
 
-## Install
-
-```bash
-pnpm add -g gh:ts-plugin-std-result-hover
-```
-
-vtsls config:
-
-```lua
-vim.lsp.config('vtsls', {
-  settings = {
-    vtsls = {
-      tsserver = {
-        globalPlugins = {
-          {
-            name = "@thomasefbland/ts-plugin-std-result-hover",
-            location = vim.fn.system("pnpm list -g --parseable @thomasefbland/ts-plugin-std-result-hover 2>/dev/null"):gsub("\n$", ""):match("([^\n]+)$"),
-            enableForWorkspaceTypeScriptVersions = true,
-          },
-        },
-      },
-    },
-  },
-})
-```
-
-Restart tsserver after installing: `:LspRestart`.
+- **Hover** (shift+K) — function signatures and variable types
+- **Completion docs** — the detail popup when selecting a completion item
+- **Signature help** — the parameter hint shown inside function call parens
+- **Inlay hints** — the inferred return type annotations shown inline
 
 ## How It Works
 
-Matching is purely structural — it detects the `{ is_ok, value, error }` shape. It doesn't specifically import or check for `@thomasefbland/std`'s `Result` type, so it will also fire on any other type with that same shape.
+Matching is purely structural — it detects the `{ is_ok, value, error }` shape using the TypeScript type checker. It doesn't specifically import or check for `@thomasefbland/std`'s `Result` type, so it will also fire on any other type with that same shape.
 
 ## Limitations
 
-- Only affects hover, completion docs, and signature help — never touches `tsc`, type-checking, or builds.
+- Only affects display — never touches `tsc`, type-checking, or builds.
 - Overloaded functions: picks the first signature matching the Result shape rather than merging all overloads.
-- Purely cosmetic display change.
+- Purely cosmetic display change for QoL.
 
 ## License
 
