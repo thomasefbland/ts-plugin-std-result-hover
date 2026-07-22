@@ -69,16 +69,22 @@ function init(modules: { typescript: typeof ts_types }) {
     return { inner: type, is_async: false };
   }
 
+  const RESULT_BRAND = "@thomasefbland:result";
+
   function analyze_result_union(checker: ts_types.TypeChecker, type: ts_types.Type): Result_Analysis | null {
     const members = type.isUnion() ? type.types : [type];
     const ok_value_types: ts_types.Type[] = [];
     const error_types: ts_types.Type[] = [];
 
+    const first_obj = members.find((m) => !!(m.flags & ts.TypeFlags.Object));
+    if (!first_obj) return null;
+    const brand_prop = first_obj.getProperty("__brand");
+    if (!brand_prop) return null;
+    const brand_type = checker.typeToString(checker.getTypeOfSymbol(brand_prop));
+    if (brand_type !== `"${RESULT_BRAND}"`) return null;
+
     for (const member of members) {
       if (!(member.flags & ts.TypeFlags.Object)) return null;
-
-      const props = member.getProperties();
-      if (props.length !== 3) return null;
 
       const is_ok_prop = member.getProperty("is_ok");
       const value_prop = member.getProperty("value");
@@ -170,6 +176,87 @@ function init(modules: { typescript: typeof ts_types }) {
     const suffix = remainder.slice(return_type_end);
 
     return [{ kind: "text", text: prefix + merged + suffix }];
+  }
+
+  // -- overload lint --------------------------------------------------------
+
+  type Return_Kind = "result" | "async_result" | "other";
+
+  function classify_type_kind(checker: ts_types.TypeChecker, type: ts_types.Type): Return_Kind {
+    const unwrapped = unwrap_promise(checker, type);
+    const analyzed = analyze_result_union(checker, unwrapped.inner);
+    if (!analyzed) return "other";
+    return unwrapped.is_async ? "async_result" : "result";
+  }
+
+  function classify_return_type(checker: ts_types.TypeChecker, signature: ts_types.Signature): Return_Kind {
+    return classify_type_kind(checker, checker.getReturnTypeOfSignature(signature));
+  }
+
+  function collect_return_kinds(checker: ts_types.TypeChecker, body: ts_types.Block): Set<Return_Kind> {
+    const kinds = new Set<Return_Kind>();
+    function walk(node: ts_types.Node) {
+      if (ts.isReturnStatement(node) && node.expression) {
+        kinds.add(classify_type_kind(checker, checker.getTypeAtLocation(node.expression)));
+      }
+      ts.forEachChild(node, walk);
+    }
+    walk(body);
+    return kinds;
+  }
+
+  function check_overload_consistency(source_file: ts_types.SourceFile, checker: ts_types.TypeChecker): ts_types.Diagnostic[] {
+    const diagnostics: ts_types.Diagnostic[] = [];
+
+    function visit(node: ts_types.Node) {
+      if (ts.isFunctionDeclaration(node) && node.name) {
+        const symbol = checker.getSymbolAtLocation(node.name);
+        if (symbol) {
+          if (node.body) {
+            const kinds = collect_return_kinds(checker, node.body);
+            const has_result = kinds.has("result") || kinds.has("async_result");
+            const has_other = kinds.has("other");
+            if (has_result && has_other) {
+              diagnostics.push({
+                file: source_file,
+                start: node.name.getStart(source_file),
+                length: node.name.getEnd() - node.name.getStart(source_file),
+                messageText: `Inconsistent return types: not all returns are Result or Async_Result`,
+                category: ts.DiagnosticCategory.Error,
+                code: 9999,
+              });
+            }
+          } else {
+            const declarations = symbol.getDeclarations();
+            if (declarations && declarations.length > 1) {
+              const kinds = new Set<Return_Kind>();
+              for (const decl of declarations) {
+                if (ts.isFunctionDeclaration(decl) && decl.body === undefined) {
+                  const sig = checker.getSignatureFromDeclaration(decl);
+                  if (sig) kinds.add(classify_return_type(checker, sig));
+                }
+              }
+              const has_result = kinds.has("result") || kinds.has("async_result");
+              const has_other = kinds.has("other");
+              if (has_result && has_other) {
+                diagnostics.push({
+                  file: source_file,
+                  start: node.name.getStart(source_file),
+                  length: node.name.getEnd() - node.name.getStart(source_file),
+                  messageText: `Inconsistent return types: not all returns are Result or Async_Result`,
+                  category: ts.DiagnosticCategory.Error,
+                  code: 9999,
+                });
+              }
+            }
+          }
+        }
+      }
+      ts.forEachChild(node, visit);
+    }
+
+    visit(source_file);
+    return diagnostics;
   }
 
   // -- plugin ---------------------------------------------------------------
@@ -319,6 +406,22 @@ function init(modules: { typescript: typeof ts_types }) {
           hint.text = merged;
           hint.displayParts = [{ kind: "text", text: merged }];
         }
+      } catch {}
+
+      return prior;
+    };
+
+    proxy.getSemanticDiagnostics = (fileName) => {
+      const prior = info.languageService.getSemanticDiagnostics(fileName);
+
+      try {
+        const program = info.languageService.getProgram();
+        const source_file = program?.getSourceFile(fileName);
+        if (!program || !source_file) return prior;
+
+        const checker = program.getTypeChecker();
+        const new_diagnostics = check_overload_consistency(source_file, checker);
+        if (new_diagnostics.length) return [...prior, ...new_diagnostics];
       } catch {}
 
       return prior;

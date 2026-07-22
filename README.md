@@ -1,4 +1,4 @@
-# @thomasefbland/ts-plugin-std-result-hover
+# @thomasefbland/ts-plugin-std-result
 
 TypeScript language-service plugin that collapses `Result`/`Async_Result` types from `@thomasefbland/std` into their clean generic form instead of the raw expanded union.
 
@@ -37,9 +37,24 @@ For async functions returning `Promise<Result<...>>`, the display is rewritten t
 - **Signature help** — the parameter hint shown inside function call parens
 - **Inlay hints** — the inferred return type annotations shown inline
 
+## Lint Diagnostics
+
+Emits an error when a function mixes `Result`/`Async_Result` returns with other types:
+
+```ts
+// Error: not all returns are Result or Async_Result
+function safe_parse(s: string) {
+  try {
+    return Ok(JSON.parse(s));
+  } catch (e) {
+    return 0; // <- not a Result
+  }
+}
+```
+
 ## How It Works
 
-Matching is purely structural — it detects the `{ is_ok, value, error }` shape using the TypeScript type checker. It doesn't specifically import or check for `@thomasefbland/std`'s `Result` type, so it will also fire on any other type with that same shape.
+Matching is based on a `declare readonly __brand: "@thomasefbland:result"` property on the `Result` type from `@thomasefbland/std`. Only types with this brand marker are collapsed — other `{ is_ok, value, error }` shapes are left untouched.
 
 ## Limitations
 

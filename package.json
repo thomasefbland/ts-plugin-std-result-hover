@@ -1,7 +1,7 @@
 {
-  "name": "@thomasefbland/ts-plugin-std-result-hover",
-  "version": "0.0.4",
-  "description": "TypeScript language-service plugin: collapses Result/Async_Result unions into clean generic form for hover, completions, signature help, and inlay hints",
+  "name": "@thomasefbland/ts-plugin-std-result",
+  "version": "0.0.5",
+  "description": "TypeScript language-service plugin: collapses Result/Async_Result unions into clean generic form and enforces consistent Result returns",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
   "files": [
@@ -9,14 +9,8 @@
   ],
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/thomasefbland/ts-plugin-std-result-hover.git"
+    "url": "git+https://github.com/thomasefbland/ts-plugin-std-result.git"
   },
-  "keywords": [
-    "typescript",
-    "typescript-plugin",
-    "language-service",
-    "tsserver"
-  ],
   "license": "MIT",
   "scripts": {
     "build": "tsc",
